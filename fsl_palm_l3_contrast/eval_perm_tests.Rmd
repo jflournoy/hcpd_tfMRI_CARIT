@@ -1,0 +1,181 @@
+---
+title: "Evaluate Permuted Results"
+author: "john flournoy"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+
+```{r}
+library(RNifti)
+library(ggplot2)
+library(patchwork)
+library(DiagrammeR)
+```
+# Permutation scheme
+
+For the test, I have 10 subjects with complete data. This is the exchangeability structure used:
+
+```{r}
+graph <- readr::read_lines('ptree.dot')
+graph <- c(graph[1], 'graph [layout = circo]', graph[2:length(graph)])
+DiagrammeR::grViz(graph)
+```
+
+Each participant has 2 runs with 7 conditions in each run. The contrast of interest subtracts the average of 3 conditions from the average of the other 4 conditions.
+
+I first created 100 permuted design matrices based on the scheme above, shuffling rows within-participant. I then ran PALM (see config below) using each of these permuted design matrices (using `-n 1000` permutations).
+
+## Design Files {.tabset}
+
+### Contrast
+
+```{r, echo = F}
+xfun::embed_file('l3_contrast.con')
+```
+
+```{r, results='asis', echo = F}
+cat(paste0('```\n', 
+          paste(readr::read_lines('l3_contrast.con'), collapse = '\n'),
+          '\n```'))
+```
+
+### Original Design Matrix
+
+```{r, echo = F}
+xfun::embed_file('l3_contrast.mat')
+```
+
+```{r, results='asis', echo = F}
+cat(paste0('```\n', 
+          paste(readr::read_lines('l3_contrast.mat'), collapse = '\n'),
+          '\n```'))
+```
+
+### Palm Config
+
+```{r, echo = F}
+xfun::embed_file('ten_perfect_l3_con_perm_01_palmconfig.txt')
+```
+
+```{r, results='asis', echo = F}
+cat(paste0('```\n', 
+          paste(readr::read_lines('ten_perfect_l3_con_perm_01_palmconfig.txt'), collapse = '\n'),
+          '\n```'))
+```
+### EBs
+
+```{r, echo = F}
+xfun::embed_file('eb.csv')
+```
+
+```{r, results='asis', echo = F}
+cat(paste0('```\n', 
+          paste(readr::read_lines('eb.csv'), collapse = '\n'),
+          '\n```'))
+```
+
+# Uncorrected _p_-values
+
+## Import data from nii
+
+First, I look at the uncorrected p-values fro the output files `perms/ten_perfect_l3_con_perm_*_dat_tstat_uncp.dscalar.nii`.
+
+```{r}
+fns <- sprintf('perms/ten_perfect_l3_con_perm_%02d_dat_tstat_uncp.dscalar.nii', 1:100, 1:100)
+d <- data.table::rbindlist(mapply(function(x, i){
+  if(file.exists(x)){
+    data.table::data.table(p = as.numeric(RNifti::readNifti(x)),
+      #p = 10^(-as.numeric(RNifti::readNifti(x))),
+                           id = i)
+  } else {
+    data.table::data.table()
+  }
+}, fns, 1:length(fns), SIMPLIFY = FALSE))
+sprintf('Range of data values (1-p): [%0.3f, %0.3f]', range(d$p)[1], range(d$p)[2])
+sprintf('Number of analyses of unique permuted design mats: %d', length(unique(d$id)))
+```
+
+## Plot distributions
+
+Density plots for each of the `r length(unique(d$id))` runs, and histograms for the data overall, and zoomed in to the left and right tails.
+
+```{r fig.width=7}
+ggplot(d, aes(x = p)) + 
+  # geom_histogram(binwidth = .05) + 
+  geom_density() + 
+  facet_wrap(~ id, nrow = 10) + 
+  theme(strip.background = element_blank(),
+        strip.text.x = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank()) + 
+  ggplot(d, aes(x = p)) + 
+  geom_histogram(binwidth = .02) + 
+  ggplot(d[p>.9], aes(x = p)) + 
+  geom_histogram(binwidth = .005) + 
+  labs(title = 'p-1 > .90') + 
+  ggplot(d[p<.1], aes(x = p)) + 
+  geom_histogram(binwidth = .005) + 
+  labs(title = 'p-1 < .10') + 
+  plot_layout(design = "
+  AAB
+  AAC
+  AAD")
+```
+
+## Compute long-run error rate for uncorrected _p_
+
+```{r}
+#these are 1-tailed tests, 1-p
+ggplot(rbind(d[, .(id = 0, 
+                   prop_sig = sum(p>.95)/.N,
+                   run = 'Overall')],
+             d[, .(prop_sig = sum(p>.95)/.N,
+                   run = 'Individual'), by = 'id']), 
+       aes(x = id, y = prop_sig, fill = run)) + 
+  geom_col() + 
+  theme(axis.text.x = element_blank()) + 
+  labs(title = 'Error rate for 1-tailed test', x = '', y = 'Proportion voxels p < .05')
+
+ggplot(rbind(d[, .(id = 0, 
+                   prop_sig = sum(p<.05)/.N,
+                   run = 'Overall')],
+             d[, .(prop_sig = sum(p<.05)/.N,
+                   run = 'Individual'), by = 'id']), 
+       aes(x = id, y = prop_sig, fill = run)) + 
+  geom_col() + 
+  theme(axis.text.x = element_blank()) + 
+  labs(title = 'Error rate for other side of 1-tailed test\n(Just in case)', x = '', y = 'Proportion voxels p < .05')
+```
+
+# FWE p-values
+
+Now looking at the FWE-corrected output.
+
+```{r}
+fns <- sprintf('perms/ten_perfect_l3_con_perm_%02d_dat_tstat_fwep.dscalar.nii', 1:100, 1:100)
+dfwe <- data.table::rbindlist(mapply(function(x, i){
+  if(file.exists(x)){
+    data.table::data.table(p = as.numeric(RNifti::readNifti(x)),
+      #p = 10^(-as.numeric(RNifti::readNifti(x))),
+                           id = i)
+  } else {
+    data.table::data.table()
+  }
+}, fns, 1:length(fns), SIMPLIFY = FALSE))
+sprintf('Range of data values (1-p): [%0.3f, %0.3f]', range(dfwe$p)[1], range(dfwe$p)[2])
+```
+
+Number of runs with at least one significant voxel: `r dfwe[, .(sig_vox = any(p>.95)), by = id][, .(n_with_sig_vox = sum(sig_vox))][[1]]`
+
+Proportion of runs with at least one significant voxel: `r dfwe[, .(sig_vox = any(p>.95)), by = id][, .(p_with_sig_vox = sum(sig_vox) / .N)][[1]]`
+
+
