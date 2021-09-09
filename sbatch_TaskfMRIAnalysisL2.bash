@@ -10,7 +10,7 @@
 #SBATCH -o log/%x-%A_%a.out
 ###
 # Usage:
-# sbatch --array=<range> <this script name> <input file>
+# sbatch --array=<range> <this script name> <input file> [1st]
 #
 # <range> should be lines of <input file>, numbered starting from 0
 # <input file> lines should be of the following format:
@@ -20,6 +20,8 @@
 # where the first field is the subject directory, the second field
 # is a "@" separated list of level 1 directories, and the third field
 # is the level 2 directory name.
+# [1st] is an optional argument that specifies only first level models
+# should be run.
 ##
 
 set -eou pipefail
@@ -31,6 +33,11 @@ source SetUpHCPPipeline.sh
 
 i=$SLURM_ARRAY_TASK_ID
 TaskAnalysisiInput=$1
+
+if [ ! -z "${2}" ] && [ "${2}" != "1st" ]; then
+	echo "Argument 2 not understood: ${2}"
+	exit 1
+fi
 
 DTFILE="../tfMRI_CARIT_AP_Atlas_hp0_clean.dtseries.nii"
 TaskfMRIAnalysis="${HCPPIPEDIR}/TaskfMRIAnalysis/TaskfMRIAnalysis.sh"
@@ -52,15 +59,26 @@ for TASK in ${TASKARRAY[@]}; do
 	sed -i -e "s|${DTFILE}|${NEWDTFILE}|" ${L1TEMPLATE}
 done
 
-L2DIR="${STUDYFOLDER}/${SUBJECTID}/MNINonLinear/Results/${TASKIDL2}"
-L2TEMPLATE="${L2DIR}/${TASKIDL2}_hp200_s4_level2.fsf"
+if [ ! -z "${2}" ] && [ "${2}" == "1st" ]; then
+	L2DIR="${STUDYFOLDER}/${SUBJECTID}/MNINonLinear/Results/${TASKIDL2}"
+	L2TEMPLATE="${L2DIR}/${TASKIDL2}_hp200_s4_level2.fsf"
 
-if [ ! -d ${L2DIR} ]; then mkdir ${L2DIR}; fi
-cp -v template_l2.fsf ${L2TEMPLATE}
-srun -c 1 bash "${TaskfMRIAnalysis}" --study-folder="${STUDYFOLDER}" \
-	--subject="${SUBJECTID}" \
-	--lvl1tasks="${TASKID}" \
-	--lvl2task="${TASKIDL2}" \
-	--procstring="hp0_clean" \
-	--finalsmoothingFWHM=4 \
-	--highpassfilter=200
+	if [ ! -d ${L2DIR} ]; then mkdir ${L2DIR}; fi
+	cp -v template_l2.fsf ${L2TEMPLATE}
+	runme="srun -c 1 bash ${TaskfMRIAnalysis} --study-folder=${STUDYFOLDER} \
+		--subject=${SUBJECTID} \
+		--lvl1tasks=${TASKID} \
+		--lvl2task=${TASKIDL2} \
+		--procstring=hp0_clean \
+		--finalsmoothingFWHM=4 \
+		--highpassfilter=200"
+elif [ -z "${2}" ]; then
+	runme="srun -c 1 bash ${TaskfMRIAnalysis} --study-folder=${STUDYFOLDER} \
+		--subject=${SUBJECTID} \
+		--lvl1tasks=${TASKID} \
+		--procstring=hp0_clean \
+		--finalsmoothingFWHM=4 \
+		--highpassfilter=200"
+fi
+	
+
